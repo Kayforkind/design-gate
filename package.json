@@ -1,0 +1,12 @@
+{
+  "name": "design-gate",
+  "version": "1.1.0",
+  "description": "Deterministic structural gate for generated HTML: lang, title, viewport, alt text, heading order, named links, landmarks, style sprawl. No LLM, no screenshots.",
+  "type": "module",
+  "bin": { "design-gate": "design-gate.mjs" },
+  "scripts": { "test": "node --test design-gate.test.mjs" },
+  "engines": { "node": ">=20" },
+  "dependencies": { "parse5": "^7.3.0" },
+  "keywords": ["html", "accessibility", "lint", "ci", "design"],
+  "license": "MIT"
+}
