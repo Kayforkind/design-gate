@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkDesign } from './design-gate.mjs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { checkDesign, CHECK_IDS } from './design-gate.mjs';
+
+const CLI = join(dirname(fileURLToPath(import.meta.url)), 'design-gate.mjs');
 
 const clean = `<!doctype html><html lang="en"><head><title>Pricing</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"></head>
@@ -41,6 +48,43 @@ test('a sloppy page trips each structural check', () => {
 test('alt="" counts as decorative, not missing', () => {
   const r = checkDesign('<html lang="en"><head><title>t</title><meta name="viewport" content="x"></head><body><main><h1>x</h1><img src="d.png" alt=""></main></body></html>');
   assert.equal(statusOf(r, 'img-alt'), 'PASS');
+});
+
+test('skip removes checks from the report and from the summary', () => {
+  const r = checkDesign(sloppy, { skip: ['lang', 'title'] });
+  assert.equal(r.checks.length, 6);
+  assert.equal(r.checks.find((c) => c.id === 'lang'), undefined);
+  assert.equal(r.summary.FAIL, 2); // img-alt and links still fail
+});
+
+test('an unknown check id is rejected, not silently ignored', () => {
+  assert.throws(() => checkDesign(clean, { skip: ['langs'] }), /unknown check id: langs/);
+  assert.equal(CHECK_IDS.length, 8);
+});
+
+test('sprawl thresholds can be raised for pages that need them', () => {
+  assert.equal(statusOf(checkDesign(sloppy), 'sprawl'), 'WARN');
+  assert.equal(statusOf(checkDesign(sloppy, { inlineStyleLimit: 100, fontFamilyLimit: 10 }), 'sprawl'), 'PASS');
+});
+
+test('CLI: bad --max-fonts and unknown --skip ids exit 2 with a message', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dg-'));
+  const file = join(dir, 'p.html');
+  writeFileSync(file, clean);
+  const neg = spawnSync(process.execPath, [CLI, file, '--max-fonts=-1'], { encoding: 'utf8' });
+  assert.equal(neg.status, 2);
+  assert.match(neg.stderr, /--max-fonts must be a whole number/);
+  const typo = spawnSync(process.execPath, [CLI, file, '--skip', 'lnag'], { encoding: 'utf8' });
+  assert.equal(typo.status, 2);
+  assert.match(typo.stderr, /unknown check id: lnag/);
+});
+
+test('CLI: --skip lets a page with a known gap pass the gate', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dg-'));
+  const file = join(dir, 'p.html');
+  writeFileSync(file, '<html lang="en"><head><title>t</title><meta name="viewport" content="x"></head><body><main><h1>x</h1><img src="a.png"></main></body></html>');
+  assert.equal(spawnSync(process.execPath, [CLI, file], { encoding: 'utf8' }).status, 1);
+  assert.equal(spawnSync(process.execPath, [CLI, file, '--skip', 'img-alt'], { encoding: 'utf8' }).status, 0);
 });
 
 test('an aria-label names an otherwise empty button', () => {

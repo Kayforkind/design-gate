@@ -17,7 +17,7 @@ It catches what a gate should block before a person looks. It does **not** judge
 | `headings` | Exactly one `<h1>`, no skipped levels | Warns otherwise |
 | `links` | Every link and button has text or `aria-label` | Fails if any is unnamed |
 | `landmark` | A `<main>` element exists | Warns if missing |
-| `sprawl` | ≤ 40 inline style attributes and ≤ 4 distinct font families | Warns if over |
+| `sprawl` | ≤ 40 inline style attributes and ≤ 4 distinct font families (adjust with `--max-inline-styles` and `--max-fonts`) | Warns if over |
 
 ## Install
 
@@ -46,6 +46,18 @@ examples/bad-page.html
   WARN sprawl    5 distinct font-family values (limit 4)
   0 pass, 4 warn, 4 fail
 ```
+
+### Tuning
+
+```bash
+# skip checks that do not apply to this page (ids: lang, title, viewport, img-alt, headings, links, landmark, sprawl)
+node design-gate.mjs dist/*.html --skip viewport,landmark
+
+# raise the sprawl limits for a page that legitimately needs more
+node design-gate.mjs dist/index.html --max-inline-styles 80 --max-fonts 6
+```
+
+An unknown check id or a negative limit exits 2 with a message, so a typo cannot silently turn a check off. Skipped checks are left out of the report and the summary.
 
 Sample pages live in [`examples/`](examples/). The full Markdown report is [`examples/report.md`](examples/report.md).
 

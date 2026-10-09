@@ -16,6 +16,7 @@
  * gate should block before a human looks at the page.
  *
  * Usage: design-gate page.html [more.html ...] [--json out.json] [--md out.md] [--fail-on fail|warn]
+ *                       [--skip id,id] [--max-inline-styles N] [--max-fonts N]
  * Exit: 0 clean · 1 failure (or warning with --fail-on warn) · 2 unreadable input
  */
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -41,7 +42,16 @@ const textOf = (n) => {
   return s.trim();
 };
 
-export function checkDesign(html) {
+export const CHECK_IDS = ['lang', 'title', 'viewport', 'img-alt', 'headings', 'links', 'landmark', 'sprawl'];
+
+/**
+ * Run the structural checks. Options:
+ *  - skip: check ids to leave out (unknown ids throw)
+ *  - inlineStyleLimit, fontFamilyLimit: thresholds for the sprawl check
+ */
+export function checkDesign(html, { inlineStyleLimit = INLINE_STYLE_LIMIT, fontFamilyLimit = FONT_FAMILY_LIMIT, skip = [] } = {}) {
+  const unknown = skip.filter((id) => !CHECK_IDS.includes(id));
+  if (unknown.length) throw new Error(`unknown check id: ${unknown.join(', ')} (known: ${CHECK_IDS.join(', ')})`);
   const doc = parse(html);
   const checks = [];
   const add = (id, status, detail) => checks.push({ id, status, detail });
@@ -97,17 +107,18 @@ export function checkDesign(html) {
   else add('landmark', 'WARN', 'no <main> landmark');
 
   const sprawl = [];
-  if (inlineStyles > INLINE_STYLE_LIMIT) sprawl.push(`${inlineStyles} inline style attributes (limit ${INLINE_STYLE_LIMIT})`);
-  if (fonts.size > FONT_FAMILY_LIMIT) sprawl.push(`${fonts.size} distinct font-family values (limit ${FONT_FAMILY_LIMIT})`);
+  if (inlineStyles > inlineStyleLimit) sprawl.push(`${inlineStyles} inline style attributes (limit ${inlineStyleLimit})`);
+  if (fonts.size > fontFamilyLimit) sprawl.push(`${fonts.size} distinct font-family values (limit ${fontFamilyLimit})`);
   if (sprawl.length) add('sprawl', 'WARN', sprawl.join('; '));
   else add('sprawl', 'PASS', `${inlineStyles} inline style(s), ${fonts.size} font-family value(s)`);
 
+  const active = checks.filter((c) => !skip.includes(c.id));
   const summary = {
-    PASS: checks.filter((c) => c.status === 'PASS').length,
-    WARN: checks.filter((c) => c.status === 'WARN').length,
-    FAIL: checks.filter((c) => c.status === 'FAIL').length,
+    PASS: active.filter((c) => c.status === 'PASS').length,
+    WARN: active.filter((c) => c.status === 'WARN').length,
+    FAIL: active.filter((c) => c.status === 'FAIL').length,
   };
-  return { summary, checks };
+  return { summary, checks: active };
 }
 
 export function toMarkdown(results) {
@@ -136,23 +147,44 @@ async function main(argv) {
       json: { type: 'string' },
       md: { type: 'string' },
       'fail-on': { type: 'string', default: 'fail' },
+      skip: { type: 'string' },
+      'max-inline-styles': { type: 'string' },
+      'max-fonts': { type: 'string' },
       help: { type: 'boolean', short: 'h' },
     },
   });
   if (values.help || positionals.length === 0) {
-    console.log('usage: design-gate page.html [more.html ...] [--json out.json] [--md out.md] [--fail-on fail|warn]');
+    console.log('usage: design-gate page.html [more.html ...] [--json out.json] [--md out.md] [--fail-on fail|warn]\n                  [--skip id,id] [--max-inline-styles N] [--max-fonts N]');
     return setExit(values.help ? 0 : 2);
   }
   if (!['fail', 'warn'].includes(values['fail-on'])) {
     console.error('--fail-on must be "fail" or "warn"');
     return setExit(2);
   }
+  const opts = {};
+  for (const [flag, key] of [['max-inline-styles', 'inlineStyleLimit'], ['max-fonts', 'fontFamilyLimit']]) {
+    if (values[flag] === undefined) continue;
+    const n = Number(values[flag]);
+    if (!Number.isInteger(n) || n < 0) {
+      console.error(`--${flag} must be a whole number, 0 or more`);
+      return setExit(2);
+    }
+    opts[key] = n;
+  }
+  if (values.skip) opts.skip = values.skip.split(',').map((s) => s.trim()).filter(Boolean);
   const results = [];
   for (const file of positionals) {
+    let html;
     try {
-      results.push({ file, report: checkDesign(readFileSync(file, 'utf8')) });
+      html = readFileSync(file, 'utf8');
     } catch (e) {
       console.error(`cannot read ${file}: ${e.message}`);
+      return setExit(2);
+    }
+    try {
+      results.push({ file, report: checkDesign(html, opts) });
+    } catch (e) {
+      console.error(e.message);
       return setExit(2);
     }
   }
@@ -169,5 +201,9 @@ async function main(argv) {
 }
 
 if (process.argv[1]?.endsWith('design-gate.mjs')) {
-  main(process.argv.slice(2));
+  // Usage errors (e.g. unknown flags) and bad values exit 2 with a one-line message, never a stack trace.
+  main(process.argv.slice(2)).catch((e) => {
+    console.error(e.message);
+    setExit(2);
+  });
 }
