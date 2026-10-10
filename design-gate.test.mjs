@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkDesign, CHECK_IDS } from './design-gate.mjs';
+import { checkDesign, CHECK_IDS, toMarkdown } from './design-gate.mjs';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), 'design-gate.mjs');
 
@@ -85,6 +85,26 @@ test('CLI: --skip lets a page with a known gap pass the gate', () => {
   writeFileSync(file, '<html lang="en"><head><title>t</title><meta name="viewport" content="x"></head><body><main><h1>x</h1><img src="a.png"></main></body></html>');
   assert.equal(spawnSync(process.execPath, [CLI, file], { encoding: 'utf8' }).status, 1);
   assert.equal(spawnSync(process.execPath, [CLI, file, '--skip', 'img-alt'], { encoding: 'utf8' }).status, 0);
+});
+
+test('deeply nested and prototype-named elements cannot crash traversal', () => {
+  assert.doesNotThrow(() => checkDesign('<constructor></constructor>' + '<div>'.repeat(5000) + 'x' + '</div>'.repeat(5000)));
+  assert.throws(() => checkDesign('x'.repeat(2 * 1024 * 1024 + 1)), /2 MiB/);
+  assert.throws(() => checkDesign(clean, { fontFamilyLimit: NaN }), /options/);
+});
+
+test('empty aria-label is not an accessible name and Markdown escapes HTML', () => {
+  assert.equal(statusOf(checkDesign('<button aria-label=" "></button>'), 'links'), 'FAIL');
+  const markdown = toMarkdown([{ file: '<img src=x>', report: { summary: { PASS: 1, WARN: 0, FAIL: 0 }, checks: [{ id: 'title', status: 'PASS', detail: '<script>x</script>|\nrow' }] } }]);
+  assert.ok(!markdown.includes('<script>') && !markdown.includes('<img'));
+  assert.ok(markdown.includes('\\|'));
+});
+
+test('CLI refuses report paths that overwrite HTML input', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dg-sec-'));
+  const input = join(root, 'x.html');
+  writeFileSync(input, clean);
+  assert.equal(spawnSync(process.execPath, [CLI, input, '--md', input], { encoding: 'utf8' }).status, 2);
 });
 
 test('an aria-label names an otherwise empty button', () => {

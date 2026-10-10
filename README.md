@@ -1,4 +1,6 @@
-# design-gate
+# design-gate 1.1.2
+
+> Structural HTML quality checks with bounded parsing and escaped, non-overwriting reports.
 
 **A deterministic quality gate for generated HTML.**
 
@@ -78,6 +80,16 @@ Sample pages live in [`examples/`](examples/). The full Markdown report is [`exa
 - Inline `style` and `<style>` blocks are scanned with regexes for font families, so unusual CSS can be missed.
 - It reads static HTML. JavaScript-rendered content is not checked.
 
+## Security
+
+HTML is parsed as data: scripts are not executed and remote resources are not fetched. Inputs are limited to regular files under 2 MiB; iterative traversal avoids JavaScript call-stack overflow on deep documents. Reports cannot overwrite inputs or each other, and Markdown escapes raw HTML, control characters and table delimiters. Empty `aria-label` values no longer count as names.
+
+This is a structural accessibility heuristic, not an HTML sanitizer, XSS scanner or accessibility certification. `--skip` intentionally omits checks; review that configuration in CI. Run hostile HTML in an isolated process with OS-level resource limits if exposing the tool as a service.
+
 ## License
 
 MIT
+
+## Release verification
+
+Use a supported Node LTS (22 or 24). Run `npm ci --ignore-scripts` followed by `npm run verify`. The security workflow runs the regression suite on Linux and Windows; it has not yet been executed remotely for this local change. New report/output files are created exclusively; choose fresh filenames or output folders for repeat runs. See [SECURITY.md](SECURITY.md) for the threat model and disclosure guidance.

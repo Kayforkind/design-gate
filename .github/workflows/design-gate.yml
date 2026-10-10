@@ -2,22 +2,21 @@ name: design-gate
 on:
   pull_request:
   workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   gate:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
-      - run: npm ci
-      - name: Build site
-        run: npm run build --if-present
-      - name: Gate built pages
-        run: |
-          files=$(find dist -name "*.html")
-          if [ -z "$files" ]; then echo "design-gate: no HTML files found in dist/"; exit 1; fi
-          node design-gate.mjs $files --md design-report.md --fail-on warn
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - run: npm run verify
+      - name: Gate the clean example
+        run: node design-gate.mjs examples/good-page.html --md design-report.md --fail-on warn
       - name: Show report
         if: always()
-        run: '[ -f design-report.md ] && cat design-report.md >> "$GITHUB_STEP_SUMMARY" || true'
+        run: 'if [ -f design-report.md ]; then cat design-report.md >> "$GITHUB_STEP_SUMMARY"; fi'

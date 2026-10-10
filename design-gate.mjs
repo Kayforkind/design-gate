@@ -19,7 +19,9 @@
  *                       [--skip id,id] [--max-inline-styles N] [--max-fonts N]
  * Exit: 0 clean · 1 failure (or warning with --fail-on warn) · 2 unreadable input
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, statSync, existsSync, realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { parse } from 'parse5';
 
@@ -27,9 +29,14 @@ const INLINE_STYLE_LIMIT = 40;
 const FONT_FAMILY_LIMIT = 4;
 
 function walk(node, visit) {
-  visit(node);
-  for (const child of node.childNodes ?? []) walk(child, visit);
-  if (node.content) walk(node.content, visit);
+  const stack = [node];
+  while (stack.length) {
+    const current = stack.pop();
+    visit(current);
+    if (current.content) stack.push(current.content);
+    const children = current.childNodes ?? [];
+    for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]);
+  }
 }
 
 const attr = (n, name) => n.attrs?.find((a) => a.name === name)?.value;
@@ -50,6 +57,8 @@ export const CHECK_IDS = ['lang', 'title', 'viewport', 'img-alt', 'headings', 'l
  *  - inlineStyleLimit, fontFamilyLimit: thresholds for the sprawl check
  */
 export function checkDesign(html, { inlineStyleLimit = INLINE_STYLE_LIMIT, fontFamilyLimit = FONT_FAMILY_LIMIT, skip = [] } = {}) {
+  if (typeof html !== 'string' || Buffer.byteLength(html) > 2 * 1024 * 1024) throw new Error('HTML must be a string under 2 MiB');
+  if (!Array.isArray(skip) || ![inlineStyleLimit, fontFamilyLimit].every((n) => Number.isSafeInteger(n) && n >= 0)) throw new Error('invalid check options');
   const unknown = skip.filter((id) => !CHECK_IDS.includes(id));
   if (unknown.length) throw new Error(`unknown check id: ${unknown.join(', ')} (known: ${CHECK_IDS.join(', ')})`);
   const doc = parse(html);
@@ -62,7 +71,7 @@ export function checkDesign(html, { inlineStyleLimit = INLINE_STYLE_LIMIT, fontF
   walk(doc, (n) => {
     if (!n.tagName) return;
     const t = n.tagName;
-    if (t in els) els[t].push(n);
+    if (Object.hasOwn(els, t)) els[t].push(n);
     if (/^h[1-6]$/.test(t)) els.h.push(n);
     if (hasAttr(n, 'style')) inlineStyles++;
     const style = attr(n, 'style') ?? '';
@@ -76,7 +85,7 @@ export function checkDesign(html, { inlineStyleLimit = INLINE_STYLE_LIMIT, fontF
   });
 
   const htmlEl = els.html[0];
-  if (htmlEl && attr(htmlEl, 'lang')) add('lang', 'PASS', `lang="${attr(htmlEl, 'lang')}"`);
+  if (htmlEl && attr(htmlEl, 'lang')?.trim()) add('lang', 'PASS', `lang="${attr(htmlEl, 'lang')}"`);
   else add('lang', 'FAIL', '<html> has no lang attribute');
 
   const title = els.title[0] ? textOf(els.title[0]) : '';
@@ -99,7 +108,7 @@ export function checkDesign(html, { inlineStyleLimit = INLINE_STYLE_LIMIT, fontF
   else if (skipped) add('headings', 'WARN', 'heading levels skip (e.g. h2 then h4)');
   else add('headings', 'PASS', 'one h1, no skipped levels');
 
-  const emptyControls = [...els.a, ...els.button].filter((c) => !textOf(c) && !hasAttr(c, 'aria-label'));
+  const emptyControls = [...els.a, ...els.button].filter((c) => !textOf(c) && !attr(c, 'aria-label')?.trim());
   if (emptyControls.length) add('links', 'FAIL', `${emptyControls.length} link/button(s) with no text or aria-label`);
   else add('links', 'PASS', 'every link and button has a name');
 
@@ -121,12 +130,14 @@ export function checkDesign(html, { inlineStyleLimit = INLINE_STYLE_LIMIT, fontF
   return { summary, checks: active };
 }
 
+const md = (s) => String(s).replace(/[\x00-\x1f\x7f]/g, ' ').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]).replace(/([\\|`*_\[\]])/g, '\\$1');
+
 export function toMarkdown(results) {
   const lines = ['# Design gate', ''];
   for (const { file, report } of results) {
-    lines.push(`## ${file}`, '', `${report.summary.PASS} pass · ${report.summary.WARN} warn · ${report.summary.FAIL} fail`, '');
+    lines.push(`## ${md(file)}`, '', `${report.summary.PASS} pass · ${report.summary.WARN} warn · ${report.summary.FAIL} fail`, '');
     lines.push('| Check | Status | Detail |', '| --- | --- | --- |');
-    for (const c of report.checks) lines.push(`| ${c.id} | ${c.status} | ${c.detail.replace(/\|/g, '\|')} |`);
+    for (const c of report.checks) lines.push(`| ${c.id} | ${c.status} | ${md(c.detail)} |`);
     lines.push('');
   }
   lines.push('_Structural checks only. Not a judgment of taste, contrast, or copy._', '');
@@ -172,10 +183,15 @@ async function main(argv) {
     opts[key] = n;
   }
   if (values.skip) opts.skip = values.skip.split(',').map((s) => s.trim()).filter(Boolean);
+  const outputs = [values.json, values.md].filter(Boolean).map((p) => existsSync(p) ? realpathSync(p) : resolve(p));
+  const inputs = positionals.map((p) => realpathSync(p));
+  if (outputs.some((p) => inputs.includes(p)) || new Set(outputs).size !== outputs.length) throw new Error('report paths must differ from inputs and each other');
+  if ([values.json, values.md].filter(Boolean).some((p) => existsSync(p))) throw new Error('report output already exists; choose a new filename');
   const results = [];
   for (const file of positionals) {
     let html;
     try {
+      if (!statSync(file).isFile() || statSync(file).size > 2 * 1024 * 1024) throw new Error('input must be a regular file under 2 MiB');
       html = readFileSync(file, 'utf8');
     } catch (e) {
       console.error(`cannot read ${file}: ${e.message}`);
@@ -188,11 +204,11 @@ async function main(argv) {
       return setExit(2);
     }
   }
-  if (values.json) writeFileSync(values.json, JSON.stringify(results.length === 1 ? results[0].report : results, null, 2) + '\n');
-  if (values.md) writeFileSync(values.md, toMarkdown(results));
+  if (values.json) writeFileSync(values.json, JSON.stringify(results.length === 1 ? results[0].report : results, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+  if (values.md) writeFileSync(values.md, toMarkdown(results), { flag: 'wx', mode: 0o600 });
   for (const { file, report } of results) {
     console.log(`\n${file}`);
-    for (const c of report.checks) console.log(`  ${c.status.padEnd(4)} ${c.id.padEnd(9)} ${c.detail}`);
+    for (const c of report.checks) console.log(`  ${c.status.padEnd(4)} ${c.id.padEnd(9)} ${c.detail.replace(/[\x00-\x1f\x7f]/g, ' ')}`);
     console.log(`  ${report.summary.PASS} pass, ${report.summary.WARN} warn, ${report.summary.FAIL} fail`);
   }
   const fail = results.some((r) => r.report.summary.FAIL > 0);
@@ -200,7 +216,7 @@ async function main(argv) {
   return setExit(fail || (values['fail-on'] === 'warn' && warn) ? 1 : 0);
 }
 
-if (process.argv[1]?.endsWith('design-gate.mjs')) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   // Usage errors (e.g. unknown flags) and bad values exit 2 with a one-line message, never a stack trace.
   main(process.argv.slice(2)).catch((e) => {
     console.error(e.message);
